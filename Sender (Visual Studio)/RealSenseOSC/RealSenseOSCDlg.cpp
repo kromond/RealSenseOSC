@@ -12,13 +12,16 @@
 #define new DEBUG_NEW
 #endif
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 // CRealSenseOSCDlg ダイアログ
 
 CRealSenseOSCDlg::CRealSenseOSCDlg(CWnd* pParent /*=nullptr*/)
 	: CDialogEx(IDD_REALSENSEOSC_DIALOG, pParent)
 	, m_edit_ip(_T("127.0.0.1"))
-	, m_edit_port(12000)
+	, m_edit_port(10000)
 	, m_edit_output(_T(""))
 	, m_check_on_top(FALSE)
 {
@@ -155,6 +158,50 @@ void CRealSenseOSCDlg::OnBnClickedButtonStop()
 	m_loopEnable = false;
 }
 
+
+
+void toEulerAngle(const rs2_quaternion& q, double& roll, double& pitch, double& yaw)
+{
+	// right-handed Cartesian coordinate system with Z axis pointing up
+	// after trying a few different methods, this one seems to work
+	// https://stackoverflow.com/questions/1031005/is-there-an-algorithm-for-converting-quaternion-rotations-to-euler-angle-rotatio
+	// https://en.wikipedia.org/wiki/Conversion_between_quaternions_and_Euler_angles
+	const double w2 = q.w * q.w;
+	const double x2 = q.x * q.x;
+	const double y2 = q.y * q.y;
+	const double z2 = q.z * q.z;
+	const double unitLength = w2 + x2 + y2 + z2;    // Normalised == 1, otherwise correction divisor.
+	const double abcd = q.w * q.x + q.y * q.z;
+	const double eps = 1e-7;    
+
+	if (abcd > (0.5 - eps) * unitLength)
+	{
+		roll = 2 * atan2(q.y, q.w);
+		pitch = M_PI;
+		yaw = 0;
+	}
+	else if (abcd < (-0.5 + eps) * unitLength)
+	{
+		roll = -2 * ::atan2(q.y, q.w);
+		pitch = -M_PI;
+		yaw = 0;
+	}
+	else
+	{
+		const double adbc = q.w * q.z - q.x * q.y;
+		const double acbd = q.w * q.y - q.x * q.z;
+		roll = ::atan2(2 * adbc, 1 - 2 * (z2 + x2));
+		pitch = ::asin(2 * abcd / unitLength);
+		yaw = ::atan2(2 * acbd, 1 - 2 * (y2 + x2));
+	}
+
+	// convert to degree
+	roll *= 180.0 / M_PI;
+	pitch *= 180.0 / M_PI;
+	yaw *= 180.0 / M_PI;
+}
+
+
 // Thread (Parent)
 UINT CRealSenseOSCDlg::ThreadParent(LPVOID pParam)
 {
@@ -192,16 +239,23 @@ void CRealSenseOSCDlg::Thread()
 		// Cast the frame to pose_frame and get its data
         auto pose_data = f.as<rs2::pose_frame>().get_pose_data();
 
+		// Convert quaternion to Euler angles
+		double roll, pitch, yaw;
+		toEulerAngle(pose_data.rotation, roll, pitch, yaw);
+
 		p.Clear();
 		p << osc::BeginBundleImmediate
 			<< osc::BeginMessage("/realsense")
-			<< pose_data.translation.x
-			<< pose_data.translation.y
-			<< pose_data.translation.z
+			<< yaw
+			<< pitch
+			<< roll
 			<< pose_data.rotation.w
 			<< pose_data.rotation.x
 			<< pose_data.rotation.y
 			<< pose_data.rotation.z
+			<< pose_data.translation.x
+			<< pose_data.translation.y
+			<< pose_data.translation.z
 			<< osc::EndMessage
 			<< osc::EndBundle;
 		transmitSocket.Send(p.Data(), p.Size());
@@ -212,13 +266,16 @@ void CRealSenseOSCDlg::Thread()
 
 		// test data
 		ss << "Address Pattern: /realsense" << "\r\n"
-			<< "[0] tx :" << pose_data.translation.x << "\r\n"
-			<< "[1] ty :" << pose_data.translation.y << "\r\n"
-			<< "[2] tz :" << pose_data.translation.z << "\r\n"
+			<< "[0] yaw   :" << yaw << "\r\n"
+			<< "[1] pitch :" << pitch << "\r\n"
+			<< "[2] roll  :" << roll << "\r\n"
 			<< "[3] qw :" << pose_data.rotation.w << "\r\n"
 			<< "[4] qx :" << pose_data.rotation.w << "\r\n"
 			<< "[5] qy :" << pose_data.rotation.y << "\r\n"
-			<< "[6] qz :" << pose_data.rotation.z << "\r\n";
+			<< "[6] qz :" << pose_data.rotation.z << "\r\n"
+			<< "[7] tx :" << pose_data.translation.x << "\r\n"
+			<< "[8] ty :" << pose_data.translation.y << "\r\n"
+			<< "[9] tz :" << pose_data.translation.z << "\r\n";
 
 		m_edit_output = ss.str().c_str();
 		AfxGetMainWnd()->SendMessage(WM_USER_UPDATE_OUTPUT);
